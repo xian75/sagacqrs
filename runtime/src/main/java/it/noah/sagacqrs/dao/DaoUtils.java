@@ -83,32 +83,19 @@ public class DaoUtils implements ICommonDao {
         return executeOneMergeOrRemove(log, conn, uuid, expire, e, requiredOptlock, originalState);
     }
 
+    public <T extends IEntity> Uni<T> logicallyRemove(Logger log, SqlConnection conn, String uuid, OffsetDateTime expire, T e, Long requiredOptlock) {
+        check(log, uuid, e, requiredOptlock, true);
+        DatabaseEventState originalState = e.getEvent().getState();
+        e.markAsLogicalDeleting(uuid);
+        return executeOneMergeOrRemove(log, conn, uuid, expire, e, requiredOptlock, originalState);
+    }
+
     public <T extends IEntity> Uni<List<T>> remove(Logger log, SqlConnection conn, String uuid, OffsetDateTime expire, List<T> items) {
-        check(log, uuid, items);
-        final List<T> itemsToRemove = removeDeletedItems(items);
-        Map<String, String> schemaTableIdMap = new HashMap<>();
-        Map<String, T> schemaTableEntityMap = new HashMap<>();
-        Map<String, Map<Long, Long>> schemaTableOptlockMap = new HashMap<>();
-        for (T item : itemsToRemove) {
-            item.markAsDeleting(uuid);
-            String schemaTable = getEntityConfig(log, item).dbTable();
-            if (!schemaTableIdMap.containsKey(schemaTable)) {
-                schemaTableIdMap.put(schemaTable, "" + item.getId());
-                try {
-                    schemaTableEntityMap.put(schemaTable, (T) getEntityConfig(log, item).newInstance());
-                } catch (Throwable ex) {
-                    log.error(getTruncatedString("DB CHECK -> ERROR: MISSING OR WRONG ENTITY " + item.getClass().getSimpleName() + " CONFIGURATION"), ex);
-                    throw new RuntimeException("Missing or wrong entity " + item.getClass().getSimpleName() + " configuration");
-                }
-                schemaTableOptlockMap.put(schemaTable, new HashMap<>());
-            } else {
-                schemaTableIdMap.put(schemaTable, schemaTableIdMap.get(schemaTable) + "," + item.getId());
-            }
-            schemaTableOptlockMap.get(schemaTable).put(item.getId(), item.getOptlock());
-        }
-        return executeManyMergeOrRemove(log, conn, uuid, expire, schemaTableIdMap, schemaTableEntityMap,
-                schemaTableOptlockMap, itemsToRemove.size(), DatabaseEventState.DELETING)
-                .map((v) -> itemsToRemove);
+        return remove(log, conn, uuid, expire, items, false);
+    }
+
+    public <T extends IEntity> Uni<List<T>> logicallyRemove(Logger log, SqlConnection conn, String uuid, OffsetDateTime expire, List<T> items) {
+        return remove(log, conn, uuid, expire, items, true);
     }
 
     public <T extends IEntity> Uni<T> merge(Logger log, SqlConnection conn, String uuid, OffsetDateTime expire, T o, T n, Long requiredOptlock) {
@@ -121,50 +108,22 @@ public class DaoUtils implements ICommonDao {
         });
     }
 
+    public <T extends IEntity> Uni<T> mergeArchiving(Logger log, SqlConnection conn, String uuid, OffsetDateTime expire, T o, T n, Long requiredOptlock) {
+        check(log, uuid, o, requiredOptlock, false);
+        DatabaseEventState originalState = o.getEvent().getState();
+        o.markAsUpdateArchiving(uuid);
+        return executeOneMergeOrRemove(log, conn, uuid, expire, o, requiredOptlock, originalState).chain(() -> {
+            n.markAsUpdateToApply(uuid, o.getId(), o.getOptlock());
+            return executeOnePersist(log, conn, expire, n);
+        });
+    }
+
     public <T extends IEntity> Uni<List<T>> merge(Logger log, SqlConnection conn, String uuid, OffsetDateTime expire, List<T> olds, Map<Long, T> news) {
-        check(log, uuid, olds);
-        final List<T> filteredOlds = removeDeletedItems(olds);
-        Map<String, String> schemaTableIdMap = new HashMap<>();
-        Map<String, T> schemaTableEntityMap = new HashMap<>();
-        Map<String, Map<Long, Long>> schemaTableOptlockMap = new HashMap<>();
-        List<T> itemsToUpdate = new ArrayList<>();
-        for (T item : filteredOlds) {
-            item.markAsUpdating(uuid);
-            String schemaTable = getEntityConfig(log, item).dbTable();
-            if (!schemaTableIdMap.containsKey(schemaTable)) {
-                schemaTableIdMap.put(schemaTable, "" + item.getId());
-                try {
-                    schemaTableEntityMap.put(schemaTable, (T) getEntityConfig(log, item).newInstance());
-                } catch (Throwable ex) {
-                    log.error(getTruncatedString("DB CHECK -> ERROR: MISSING OR WRONG ENTITY " + item.getClass().getSimpleName() + " CONFIGURATION"), ex);
-                    throw new RuntimeException("Missing or wrong entity " + item.getClass().getSimpleName() + " configuration");
-                }
-                schemaTableOptlockMap.put(schemaTable, new HashMap<>());
-            } else {
-                schemaTableIdMap.put(schemaTable, schemaTableIdMap.get(schemaTable) + "," + item.getId());
-            }
-            schemaTableOptlockMap.get(schemaTable).put(item.getId(), item.getOptlock());
-            if (news.containsKey(item.getId())) {
-                T itemToUpdate = news.get(item.getId());
-                itemToUpdate.markAsUpdateToApply(uuid, item.getId(), item.getOptlock());
-                itemsToUpdate.add(itemToUpdate);
-            }
-        }
-        if (filteredOlds.size() != itemsToUpdate.size()) {
-            log.error(getTruncatedString("DB ROLLBACK " + uuid + " DUE TO "
-                    + itemsToUpdate.size() + " UPDATE_TO_APPLY ROWS MISMATCH THE " + filteredOlds.size() + " UPDATING ONES"));
-            throw new RuntimeException(itemsToUpdate.size() + " UPDATE_TO_APPLY rows mismatch the " + filteredOlds.size() + " UPDATING ones");
-        } else {
-            return executeManyMergeOrRemove(log, conn, uuid, expire, schemaTableIdMap, schemaTableEntityMap,
-                    schemaTableOptlockMap, filteredOlds.size(), DatabaseEventState.UPDATING)
-                    .chain((v) -> executeManyPersist(log, conn, expire, itemsToUpdate))
-                    .map(newItems -> {
-                        List<T> itemsChanged = new ArrayList<>();
-                        itemsChanged.addAll(filteredOlds);
-                        itemsChanged.addAll(newItems);
-                        return itemsChanged;
-                    });
-        }
+        return merge(log, conn, uuid, expire, olds, news, false);
+    }
+
+    public <T extends IEntity> Uni<List<T>> mergeArchiving(Logger log, SqlConnection conn, String uuid, OffsetDateTime expire, List<T> olds, Map<Long, T> news) {
+        return merge(log, conn, uuid, expire, olds, news, true);
     }
 
     private <T extends IEntity> Uni<List<T>> executeGetResultList(Logger log, SqlConnection conn, String query, T responseObject,
@@ -336,6 +295,88 @@ public class DaoUtils implements ICommonDao {
         return loopRoot.map((v) -> insertedItems);
     }
 
+    private <T extends IEntity> Uni<List<T>> remove(Logger log, SqlConnection conn, String uuid, OffsetDateTime expire, List<T> items, boolean isLogical) {
+        check(log, uuid, items);
+        final List<T> itemsToRemove = removeDeletedItems(items);
+        Map<String, String> schemaTableIdMap = new HashMap<>();
+        Map<String, T> schemaTableEntityMap = new HashMap<>();
+        Map<String, Map<Long, Long>> schemaTableOptlockMap = new HashMap<>();
+        for (T item : itemsToRemove) {
+            if (isLogical) {
+                item.markAsLogicalDeleting(uuid);
+            } else {
+                item.markAsDeleting(uuid);
+            }
+            String schemaTable = getEntityConfig(log, item).dbTable();
+            if (!schemaTableIdMap.containsKey(schemaTable)) {
+                schemaTableIdMap.put(schemaTable, "" + item.getId());
+                try {
+                    schemaTableEntityMap.put(schemaTable, (T) getEntityConfig(log, item).newInstance());
+                } catch (Throwable ex) {
+                    log.error(getTruncatedString("DB CHECK -> ERROR: MISSING OR WRONG ENTITY " + item.getClass().getSimpleName() + " CONFIGURATION"), ex);
+                    throw new RuntimeException("Missing or wrong entity " + item.getClass().getSimpleName() + " configuration");
+                }
+                schemaTableOptlockMap.put(schemaTable, new HashMap<>());
+            } else {
+                schemaTableIdMap.put(schemaTable, schemaTableIdMap.get(schemaTable) + "," + item.getId());
+            }
+            schemaTableOptlockMap.get(schemaTable).put(item.getId(), item.getOptlock());
+        }
+        return executeManyMergeOrRemove(log, conn, uuid, expire, schemaTableIdMap, schemaTableEntityMap,
+                schemaTableOptlockMap, itemsToRemove.size(), isLogical ? DatabaseEventState.LOGICAL_DELETING : DatabaseEventState.DELETING)
+                .map((v) -> itemsToRemove);
+    }
+
+    private <T extends IEntity> Uni<List<T>> merge(Logger log, SqlConnection conn, String uuid, OffsetDateTime expire, List<T> olds, Map<Long, T> news, boolean isArchiving) {
+        check(log, uuid, olds);
+        final List<T> filteredOlds = removeDeletedItems(olds);
+        Map<String, String> schemaTableIdMap = new HashMap<>();
+        Map<String, T> schemaTableEntityMap = new HashMap<>();
+        Map<String, Map<Long, Long>> schemaTableOptlockMap = new HashMap<>();
+        List<T> itemsToUpdate = new ArrayList<>();
+        for (T item : filteredOlds) {
+            if (isArchiving) {
+                item.markAsUpdateArchiving(uuid);
+            } else {
+                item.markAsUpdating(uuid);
+            }
+            String schemaTable = getEntityConfig(log, item).dbTable();
+            if (!schemaTableIdMap.containsKey(schemaTable)) {
+                schemaTableIdMap.put(schemaTable, "" + item.getId());
+                try {
+                    schemaTableEntityMap.put(schemaTable, (T) getEntityConfig(log, item).newInstance());
+                } catch (Throwable ex) {
+                    log.error(getTruncatedString("DB CHECK -> ERROR: MISSING OR WRONG ENTITY " + item.getClass().getSimpleName() + " CONFIGURATION"), ex);
+                    throw new RuntimeException("Missing or wrong entity " + item.getClass().getSimpleName() + " configuration");
+                }
+                schemaTableOptlockMap.put(schemaTable, new HashMap<>());
+            } else {
+                schemaTableIdMap.put(schemaTable, schemaTableIdMap.get(schemaTable) + "," + item.getId());
+            }
+            schemaTableOptlockMap.get(schemaTable).put(item.getId(), item.getOptlock());
+            if (news.containsKey(item.getId())) {
+                T itemToUpdate = news.get(item.getId());
+                itemToUpdate.markAsUpdateToApply(uuid, item.getId(), item.getOptlock());
+                itemsToUpdate.add(itemToUpdate);
+            }
+        }
+        if (filteredOlds.size() != itemsToUpdate.size()) {
+            log.error(getTruncatedString("DB ROLLBACK " + uuid + " DUE TO "
+                    + itemsToUpdate.size() + " UPDATE_TO_APPLY ROWS MISMATCH THE " + filteredOlds.size() + " UPDATING ONES"));
+            throw new RuntimeException(itemsToUpdate.size() + " UPDATE_TO_APPLY rows mismatch the " + filteredOlds.size() + " UPDATING ones");
+        } else {
+            return executeManyMergeOrRemove(log, conn, uuid, expire, schemaTableIdMap, schemaTableEntityMap,
+                    schemaTableOptlockMap, filteredOlds.size(), isArchiving ? DatabaseEventState.UPDATE_ARCHIVING : DatabaseEventState.UPDATING)
+                    .chain((v) -> executeManyPersist(log, conn, expire, itemsToUpdate))
+                    .map(newItems -> {
+                        List<T> itemsChanged = new ArrayList<>();
+                        itemsChanged.addAll(filteredOlds);
+                        itemsChanged.addAll(newItems);
+                        return itemsChanged;
+                    });
+        }
+    }
+
     private <T extends IEntity> Uni<T> executeOneMergeOrRemove(Logger log, SqlConnection conn, String uuid, OffsetDateTime expire, T e, Long requiredOptlock,
             DatabaseEventState originalState) {
         if (requiredOptlock == null) {
@@ -344,7 +385,7 @@ public class DaoUtils implements ICommonDao {
         final Long finalRequiredOptlock = requiredOptlock;
         String query = String.format("UPDATE %s SET event_uuid = $1, event_state = $2 WHERE optlock = $3 AND id = $4 AND event_state IS NULL AND now() < $5 RETURNING *",
                 getEntityConfig(log, e).dbTable());
-        QueryParameters params = new QueryParameters(new Object[]{uuid, e.getEvent().getState(), requiredOptlock, e.getId(), expire});
+        QueryParameters params = new QueryParameters(new Object[]{uuid, e.getEvent().getState().getId(), requiredOptlock, e.getId(), expire});
         return execute(conn, query, params)
                 .onItem().transform(queryResp -> {
                     if (queryResp.getError() != null) {
@@ -360,7 +401,8 @@ public class DaoUtils implements ICommonDao {
                             exceptionDetails = " for timeout exception";
                         }
                         log.error(getTruncatedString("DB ROLLBACK [" + queryResp.getExecutionTime() + "]: " + query + "; " + logParam(log, params)
-                                + " -> ITEM: NO ITEM " + (e.getEvent().getState().equals(DatabaseEventState.DELETING) ? "DELETED" : "UPDTADE")
+                                + " -> ITEM: NO ITEM " + (e.getEvent().getState().equals(DatabaseEventState.LOGICAL_DELETING)
+                                || e.getEvent().getState().equals(DatabaseEventState.DELETING) ? "DELETED" : "UPDATED")
                                 + " WITH ID " + e.getId() + ", STATE \"" + originalState + "\" AND OPTLOCK " + finalRequiredOptlock
                                 + exceptionDetails.toUpperCase()));
                         throw new RuntimeException(e.getClass().getSimpleName() + " with id " + e.getId() + " not set as " + e.getEvent().getState() + exceptionDetails);
@@ -381,7 +423,8 @@ public class DaoUtils implements ICommonDao {
                         }
                         log.error(getTruncatedString("DB ROLLBACK [" + queryResp.getExecutionTime() + "]: " + query + "; " + logParam(log, params)
                                 + " -> ITEMS (ERROR - SHOULD BE JUST ONE BUT WERE "
-                                + (e.getEvent().getState().equals(DatabaseEventState.DELETING) ? "DELETED" : "UPDTADE")
+                                + (e.getEvent().getState().equals(DatabaseEventState.LOGICAL_DELETING)
+                                || e.getEvent().getState().equals(DatabaseEventState.DELETING) ? "DELETED" : "UPDATED")
                                 + " MANY): [" + itemsString + "]"));
                         throw new RuntimeException(e.getClass().getSimpleName() + " with id " + e.getId() + " not set as " + e.getEvent().getState()
                                 + " for concurrent transactions");
@@ -410,7 +453,7 @@ public class DaoUtils implements ICommonDao {
         for (String schemaTable : schemaTableIdMap.keySet()) {
             String query = String.format("UPDATE %s SET event_uuid = $1, event_state = $2 WHERE id IN (%s) AND event_state IS NULL AND now() < $3 RETURNING *",
                     schemaTable, schemaTableIdMap.get(schemaTable));
-            QueryParameters params = new QueryParameters(new Object[]{uuid, state, expire});
+            QueryParameters params = new QueryParameters(new Object[]{uuid, state.getId(), expire});
             T e = schemaTableEntityMap.get(schemaTable);
             Map<Long, Long> optlockMap = schemaTableOptlockMap.get(schemaTable);
             loopRoot = loopRoot.chain(() -> execute(conn, query, params)
@@ -477,12 +520,12 @@ public class DaoUtils implements ICommonDao {
                     throw new RuntimeException("timeout exception");
                 } else {
                     log.error(getTruncatedString("DB ROLLBACK [" + auxQueryResp.getExecutionTime() + "] " + uuid + " DUE TO UNEXPECTED ROWS "
-                            + (state.equals(DatabaseEventState.DELETING) ? "DELETED" : "UPDATED")
+                            + (state.equals(DatabaseEventState.LOGICAL_DELETING) || state.equals(DatabaseEventState.DELETING) ? "DELETED" : "UPDATED")
                             + " (" + totalRowsChanged + " CHANGED VS " + expectedRowsChanged + " TO CHANGE)"));
                     throw new RuntimeException(totalRowsChanged + " "
-                            + (state.equals(DatabaseEventState.DELETING) ? "deleted" : "updated")
+                            + (state.equals(DatabaseEventState.LOGICAL_DELETING) || state.equals(DatabaseEventState.DELETING) ? "deleted" : "updated")
                             + " rows mismatch the " + expectedRowsChanged
-                            + " ones to " + (state.equals(DatabaseEventState.DELETING) ? "delete" : "update")
+                            + " ones to " + (state.equals(DatabaseEventState.LOGICAL_DELETING) || state.equals(DatabaseEventState.DELETING) ? "delete" : "update")
                             + "(concurrently db access probably)");
                 }
             } else {
@@ -520,7 +563,7 @@ public class DaoUtils implements ICommonDao {
         }
         params.add(e.getOptlock());
         params.add(e.getEvent().getUuid());
-        params.add(e.getEvent().getState());
+        params.add(e.getEvent().getState().getId());
         params.add(expire);
         return params.toArray(new Object[]{});
     }

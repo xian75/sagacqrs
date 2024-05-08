@@ -21,7 +21,7 @@ public interface IEntity {
 
     public void setEvent(EventAttributes event);
 
-    public default String getEventStateName() {
+    public default String eventStateName() {
         if (getEvent() == null || getEvent().getState() == null) {
             return null;
         } else {
@@ -38,9 +38,25 @@ public interface IEntity {
         }
     }
 
+    public default void markAsLogicalDeleting(String uuid) {
+        try {
+            setEvent(EventAttributes.initialize(uuid, DatabaseEventState.LOGICAL_DELETING));
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+    }
+
     public default void markAsDeleting(String uuid) {
         try {
             setEvent(EventAttributes.initialize(uuid, DatabaseEventState.DELETING));
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+    }
+
+    public default void markAsUpdateArchiving(String uuid) {
+        try {
+            setEvent(EventAttributes.initialize(uuid, DatabaseEventState.UPDATE_ARCHIVING));
         } catch (Exception ex) {
             ex.printStackTrace();
         }

@@ -14,16 +14,20 @@ import java.util.Map;
  */
 public enum DatabaseEventState implements Serializable {
 
-    // COMMIT      ROLLBACK
-    // 0 -> null   0 -> 4
-    // 1 -> 4      1 -> null
-    // 2 -> 4      2 -> null
-    // 3 -> null   3 -> 4
+    // COMMIT       ROLLBACK
+    // 0 -> null    0 -> CANCEL
+    // 1 -> -1      1 -> null
+    // 2 -> CANCEL  2 -> null
+    // 3 -> -1      3 -> null
+    // 4 -> CANCEL  4 -> null
+    // 5 -> null    5 -> CANCEL
+    DELETED((short) -1),
     INSERTING((short) 0),
-    DELETING((short) 1),
-    UPDATING((short) 2),
-    UPDATE_TO_APPLY((short) 3),
-    DELETED((short) 4);
+    LOGICAL_DELETING((short) 1),
+    DELETING((short) 2),
+    UPDATE_ARCHIVING((short) 3),
+    UPDATING((short) 4),
+    UPDATE_TO_APPLY((short) 5);
 
     private final short id;
 

@@ -190,6 +190,10 @@ public class Orchestrator {
     }
 
     private Uni<String> finalizeOrFixTransactions(Logger log, Participant[] participants, Uni<List<Transaction>> transactionsToFinalize) {
+        if (log == null) {
+            System.out.println(getTruncatedString("ORCHESTRATOR: NO LOG SET"));
+            return Uni.createFrom().item("");
+        }
         if (participants == null || participants.length == 0) {
             log.error(getTruncatedString("ORCHESTRATOR: NO PARTICIPANTS SET"));
             return Uni.createFrom().item("");

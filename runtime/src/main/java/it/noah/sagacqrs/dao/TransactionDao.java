@@ -22,6 +22,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
@@ -30,6 +31,9 @@ import org.jboss.logging.Logger;
  */
 @ApplicationScoped
 public class TransactionDao implements ICommonDao {
+
+    @ConfigProperty(name = "saga.schematable.transactions", defaultValue = "orchestrator.transactions")
+    String transactionsSchemaTable;
 
     @Inject
     Logger log;
@@ -49,8 +53,8 @@ public class TransactionDao implements ICommonDao {
         OffsetDateTime expire = OffsetDateTime.now();
         expire = expire.plus(timeout, ChronoUnit.MILLIS);
         t.setExpire(expire);
-        String query = "INSERT INTO orchestrator.transactions(event_uuid, operation, outcome, expire, timeout)"
-                + " VALUES($1, $2, $3, $4, $5) RETURNING *";
+        String query = String.format("INSERT INTO %s(event_uuid, operation, outcome, expire, timeout)"
+                + " VALUES($1, $2, $3, $4, $5) RETURNING *", transactionsSchemaTable);
         QueryParameters params = new QueryParameters(t.array());
         return dbPool.withTransaction(conn -> execute(conn, query, params))
                 .onItem().transform(queryResp -> {
@@ -84,7 +88,7 @@ public class TransactionDao implements ICommonDao {
         Transaction t = new Transaction();
         t.setUuid(uuid);
         t.setOutcome(outcome.name());
-        String query = "UPDATE orchestrator.transactions SET outcome = $1 WHERE event_uuid = $2 AND outcome = 'PENDING' RETURNING *";
+        String query = String.format("UPDATE %s SET outcome = $1 WHERE event_uuid = $2 AND outcome = 'PENDING' RETURNING *", transactionsSchemaTable);
         QueryParameters params = new QueryParameters(new Object[]{outcome.name(), uuid});
         return dbPool.withTransaction(conn -> execute(conn, query, params))
                 .onItem().transform(queryResp -> {
@@ -108,7 +112,7 @@ public class TransactionDao implements ICommonDao {
 
     public Uni<List<Transaction>> finalizeCommitAndRollback() {
         QueryResponse auxQueryResp = new QueryResponse();
-        String query = "UPDATE orchestrator.transactions SET outcome = 'FINALIZE_' || outcome WHERE outcome IN ('COMMIT','ROLLBACK') RETURNING *";
+        String query = String.format("UPDATE %s SET outcome = 'FINALIZE_' || outcome WHERE outcome IN ('COMMIT','ROLLBACK') RETURNING *", transactionsSchemaTable);
         return dbPool.withTransaction(conn -> execute(conn, query))
                 .onItem().transformToMulti(queryResp -> {
                     auxQueryResp.setExecutionTime(queryResp.getExecutionTime());
@@ -137,7 +141,7 @@ public class TransactionDao implements ICommonDao {
             return Uni.createFrom().item(new ArrayList<>());
         }
         QueryResponse auxQueryResp = new QueryResponse();
-        String query = String.format("DELETE FROM orchestrator.transactions WHERE event_uuid IN (%s) RETURNING *",
+        String query = String.format("DELETE FROM %s WHERE event_uuid IN (%s) RETURNING *", transactionsSchemaTable,
                 getListOfStringAsString(transactions.stream().map(t -> t.getUuid()).collect(Collectors.toList())));
         return dbPool.withTransaction(conn -> execute(conn, query))
                 .onItem().transformToMulti(queryResp -> {
@@ -162,10 +166,10 @@ public class TransactionDao implements ICommonDao {
 
     public Uni<List<Transaction>> fixPendingAndFinalizeExpired() {
         QueryResponse auxQueryResp = new QueryResponse();
-        String query = "UPDATE orchestrator.transactions SET"
+        String query = String.format("UPDATE %s SET"
                 + " outcome = CASE WHEN outcome = 'PENDING' THEN 'FINALIZE_ROLLBACK' ELSE outcome END,"
                 + " expire = NOW() + interval '1 milliseconds' * timeout"
-                + " WHERE expire < NOW() AND outcome IN ('PENDING','FINALIZE_COMMIT','FINALIZE_ROLLBACK') RETURNING *";
+                + " WHERE expire < NOW() AND outcome IN ('PENDING','FINALIZE_COMMIT','FINALIZE_ROLLBACK') RETURNING *", transactionsSchemaTable);
         return dbPool.withTransaction(conn -> execute(conn, query))
                 .onItem().transformToMulti(queryResp -> {
                     auxQueryResp.setExecutionTime(queryResp.getExecutionTime());

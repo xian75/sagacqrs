@@ -101,11 +101,13 @@ public class ParticipantConfigurator implements ICommonDao {
 
     private Uni<Void> applyLoopRoot(Uni<Void> loopRoot, List<Integer> affectedRowsCount, Logger log, SqlConnection conn,
             List<String> uuids, IEntity table, boolean isCommit) {
-        return loopRoot.chain(() -> updateOneTable(log, conn, uuids, table, isCommit)
+        return loopRoot.chain(() -> updateOrDeleteOneTable(log, conn, uuids, table, isCommit, false)
+                .invoke(word -> affectedRowsCount.add(word)).replaceWithVoid())
+                .chain(() -> updateOrDeleteOneTable(log, conn, uuids, table, isCommit, true)
                 .invoke(word -> affectedRowsCount.add(word)).replaceWithVoid());
     }
 
-    private Uni<Integer> updateOneTable(Logger log, SqlConnection conn, List<String> uuids, IEntity table, boolean isCommit) {
+    private Uni<Integer> updateOrDeleteOneTable(Logger log, SqlConnection conn, List<String> uuids, IEntity table, boolean isCommit, boolean isDelete) {
         String dbTableName = null;
         try {
             dbTableName = getEntityConfig(log, table).dbTable();
@@ -115,11 +117,21 @@ public class ParticipantConfigurator implements ICommonDao {
         }
         final StringBuilder query = new StringBuilder();
         if (isCommit) {
-            query.append(String.format("UPDATE %s SET event_state = CASE WHEN event_state IN (0,3) THEN null ELSE 4 END WHERE event_state IS NOT NULL AND event_uuid IN (%s) RETURNING *",
-                    dbTableName, getListOfStringAsString(uuids)));
+            if (isDelete) {
+                query.append(String.format("DELETE FROM %s WHERE event_state IS NOT NULL AND event_state IN (2,4) AND event_uuid IN (%s) RETURNING *",
+                        dbTableName, getListOfStringAsString(uuids)));
+            } else {
+                query.append(String.format("UPDATE %s SET event_state = CASE WHEN event_state IN (0,5) THEN null ELSE -1 END WHERE event_state IS NOT NULL AND event_state IN (0,1,3,5) AND event_uuid IN (%s) RETURNING *",
+                        dbTableName, getListOfStringAsString(uuids)));
+            }
         } else {
-            query.append(String.format("UPDATE %s SET event_state = CASE WHEN event_state IN (1,2) THEN null ELSE 4 END WHERE event_state IS NOT NULL AND event_uuid IN (%s) RETURNING *",
-                    dbTableName, getListOfStringAsString(uuids)));
+            if (isDelete) {
+                query.append(String.format("DELETE FROM %s WHERE event_state IS NOT NULL AND event_state IN (0,5) AND event_uuid IN (%s) RETURNING *",
+                        dbTableName, getListOfStringAsString(uuids)));
+            } else {
+                query.append(String.format("UPDATE %s SET event_state = null WHERE event_state IS NOT NULL AND event_state IN (1,2,3,4) AND event_uuid IN (%s) RETURNING *",
+                        dbTableName, getListOfStringAsString(uuids)));
+            }
         }
         QueryResponse auxQueryResp = new QueryResponse();
         return execute(conn, query.toString())
