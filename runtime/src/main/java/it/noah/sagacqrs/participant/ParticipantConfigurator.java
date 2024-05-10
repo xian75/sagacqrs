@@ -6,7 +6,7 @@ package it.noah.sagacqrs.participant;
 
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
-import io.vertx.mutiny.pgclient.PgPool;
+import io.vertx.mutiny.sqlclient.Pool;
 import io.vertx.mutiny.sqlclient.SqlConnection;
 import it.noah.sagacqrs.dao.dto.QueryResponse;
 import it.noah.sagacqrs.dao.interfaces.ICommonDao;
@@ -38,7 +38,7 @@ public class ParticipantConfigurator implements ICommonDao {
     @Inject
     Jsoner jsoner;
 
-    public void init(Logger log, PgPool dbPool, Class... classes) throws Throwable {
+    public void init(Logger log, Pool dbPool, Class... classes) throws Throwable {
         List<IEntity> entities = new ArrayList<>();
         for (Class clazz : classes) {
             entities.add((IEntity) clazz.getDeclaredConstructor().newInstance());
@@ -59,7 +59,7 @@ public class ParticipantConfigurator implements ICommonDao {
                 });
     }
 
-    private Uni<Integer> finalizeCommitAndRollback(Logger log, PgPool dbPool, List<IEntity> tables, List<Transaction> transactions) {
+    private Uni<Integer> finalizeCommitAndRollback(Logger log, Pool dbPool, List<IEntity> tables, List<Transaction> transactions) {
         List<String> transactionsToCommit = transactions.stream().filter(t -> t.getOutcome().equals("FINALIZE_COMMIT"))
                 .map(t -> t.getUuid()).collect(Collectors.toList());
         List<String> transactionsToRollback = transactions.stream().filter(t -> t.getOutcome().equals("FINALIZE_ROLLBACK"))
@@ -67,7 +67,7 @@ public class ParticipantConfigurator implements ICommonDao {
         return finalizeCommitAndRollback(log, dbPool, tables, transactionsToCommit, transactionsToRollback);
     }
 
-    private Uni<Integer> finalizeCommitAndRollback(Logger log, PgPool dbPool, List<IEntity> tables,
+    private Uni<Integer> finalizeCommitAndRollback(Logger log, Pool dbPool, List<IEntity> tables,
             List<String> uuidsToCommit, List<String> uuidsToRollback) {
         final Integer[] acc = new Integer[1];
         return dbPool.withTransaction(conn -> commit(log, conn, uuidsToCommit, tables)

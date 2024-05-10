@@ -28,10 +28,6 @@
             <artifactId>quarkus-rest-client-jackson-deployment</artifactId>
         </dependency>
         <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-reactive-pg-client-deployment</artifactId>
-        </dependency>
-        <dependency>
             <groupId>it.noah</groupId>
             <artifactId>sagacqrs</artifactId>
             <version>${project.version}</version>

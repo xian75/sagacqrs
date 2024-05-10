@@ -7,7 +7,7 @@ package it.noah.sagacqrs.dao;
 import it.noah.sagacqrs.dao.interfaces.ICommonDao;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
-import io.vertx.mutiny.pgclient.PgPool;
+import io.vertx.mutiny.sqlclient.Pool;
 import io.vertx.mutiny.sqlclient.Row;
 import io.vertx.mutiny.sqlclient.RowIterator;
 import it.noah.sagacqrs.enums.TransactionOutcome;
@@ -39,12 +39,9 @@ public class TransactionDao implements ICommonDao {
     Logger log;
 
     @Inject
-    PgPool dbPool;
-
-    @Inject
     Jsoner jsoner;
 
-    public Uni<Transaction> create(String uuid, String operation, long timeout) {
+    public Uni<Transaction> create(Pool dbPool, String uuid, String operation, long timeout) {
         Transaction t = new Transaction();
         t.setUuid(uuid);
         t.setOperation(operation);
@@ -76,15 +73,15 @@ public class TransactionDao implements ICommonDao {
                 });
     }
 
-    public Uni<Transaction> commit(String uuid) {
-        return commitOrRollback(uuid, TransactionOutcome.COMMIT);
+    public Uni<Transaction> commit(Pool dbPool, String uuid) {
+        return commitOrRollback(dbPool, uuid, TransactionOutcome.COMMIT);
     }
 
-    public Uni<Transaction> rollback(String uuid) {
-        return commitOrRollback(uuid, TransactionOutcome.ROLLBACK);
+    public Uni<Transaction> rollback(Pool dbPool, String uuid) {
+        return commitOrRollback(dbPool, uuid, TransactionOutcome.ROLLBACK);
     }
 
-    private Uni<Transaction> commitOrRollback(String uuid, TransactionOutcome outcome) {
+    private Uni<Transaction> commitOrRollback(Pool dbPool, String uuid, TransactionOutcome outcome) {
         Transaction t = new Transaction();
         t.setUuid(uuid);
         t.setOutcome(outcome.name());
@@ -110,7 +107,7 @@ public class TransactionDao implements ICommonDao {
                 });
     }
 
-    public Uni<List<Transaction>> finalizeCommitAndRollback() {
+    public Uni<List<Transaction>> finalizeCommitAndRollback(Pool dbPool) {
         QueryResponse auxQueryResp = new QueryResponse();
         String query = String.format("UPDATE %s SET outcome = 'FINALIZE_' || outcome WHERE outcome IN ('COMMIT','ROLLBACK') RETURNING *", transactionsSchemaTable);
         return dbPool.withTransaction(conn -> execute(conn, query))
@@ -136,7 +133,7 @@ public class TransactionDao implements ICommonDao {
                 });
     }
 
-    public Uni<List<Transaction>> delete(List<Transaction> transactions) {
+    public Uni<List<Transaction>> delete(Pool dbPool, List<Transaction> transactions) {
         if (transactions == null || transactions.isEmpty()) {
             return Uni.createFrom().item(new ArrayList<>());
         }
@@ -164,7 +161,7 @@ public class TransactionDao implements ICommonDao {
                 });
     }
 
-    public Uni<List<Transaction>> fixPendingAndFinalizeExpired() {
+    public Uni<List<Transaction>> fixPendingAndFinalizeExpired(Pool dbPool) {
         QueryResponse auxQueryResp = new QueryResponse();
         String query = String.format("UPDATE %s SET"
                 + " outcome = CASE WHEN outcome = 'PENDING' THEN 'FINALIZE_ROLLBACK' ELSE outcome END,"

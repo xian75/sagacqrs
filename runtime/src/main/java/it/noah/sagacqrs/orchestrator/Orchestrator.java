@@ -6,6 +6,7 @@ package it.noah.sagacqrs.orchestrator;
 
 import io.quarkus.scheduler.Scheduled;
 import io.smallrye.mutiny.Uni;
+import io.vertx.mutiny.sqlclient.Pool;
 import it.noah.sagacqrs.dao.dto.ErrorMap;
 import it.noah.sagacqrs.dao.dto.EventMessage;
 import it.noah.sagacqrs.dao.dto.Participant;
@@ -32,6 +33,7 @@ import org.jboss.logging.Logger;
 public class Orchestrator {
 
     private Logger log;
+    private Pool dbPool;
     private Participant[] allParticipants;
 
     @Inject
@@ -40,19 +42,20 @@ public class Orchestrator {
     @Inject
     Jsoner jsoner;
 
-    public void init(Logger log, Participant... participants) {
+    public void init(Logger log, Pool dbPool, Participant... participants) {
         this.log = log;
+        this.dbPool = dbPool;
         allParticipants = participants;
     }
 
     @Scheduled(every = "{saga.scheduler.finalize}")
     void finalizeOrFix() {
-        finalizeOrFixTransactions(log, allParticipants, transactionFacade.finalizeCommitAndRollback()).subscribeAsCompletionStage();
+        finalizeOrFixTransactions(log, allParticipants, transactionFacade.finalizeCommitAndRollback(dbPool)).subscribeAsCompletionStage();
     }
 
     @Scheduled(every = "{saga.scheduler.fix}")
     void fix() {
-        finalizeOrFixTransactions(log, allParticipants, transactionFacade.fixPendingAndFinalizeExpired()).subscribeAsCompletionStage();
+        finalizeOrFixTransactions(log, allParticipants, transactionFacade.fixPendingAndFinalizeExpired(dbPool)).subscribeAsCompletionStage();
     }
 
     public Uni<Response> saga(String operation, Object data, Participant... sagaParticipants) {
@@ -86,9 +89,9 @@ public class Orchestrator {
                             }
                         }
                         if (eventMessage.getErrors().isEmpty()) {
-                            return transactionFacade.commit(eventMessage.getUuid());
+                            return transactionFacade.commit(dbPool, eventMessage.getUuid());
                         } else {
-                            return transactionFacade.rollback(eventMessage.getUuid());
+                            return transactionFacade.rollback(dbPool, eventMessage.getUuid());
                         }
                     })
                     .onItemOrFailure().transform((result, failure) -> {
@@ -137,7 +140,7 @@ public class Orchestrator {
 
     private Uni<Void> startSagaFirstParticipantExecute(Logger log, EventMessage eventMessage, long totalTimeout, Object data,
             Participant participant, Response[] lastResponse) {
-        return transactionFacade.create(eventMessage.getUuid(), eventMessage.getOperation(), totalTimeout)
+        return transactionFacade.create(dbPool, eventMessage.getUuid(), eventMessage.getOperation(), totalTimeout)
                 .onItemOrFailure().transform((transaction, failure)
                         -> checkTransactionInsertError(log, transaction, failure, eventMessage.getErrors()))
                 .chain(trans -> {
@@ -215,7 +218,7 @@ public class Orchestrator {
                         log.info(getTruncatedString(participants[participants.length - 1].getName() + ": " + total + " ENTITIES FINALIZED"));
                     }
                     if (errors.isEmpty() && !transactions.isEmpty()) {
-                        return transactionFacade.delete(transactions);
+                        return transactionFacade.delete(dbPool, transactions);
                     } else {
                         return Uni.createFrom().item(Response.ok().build());
                     }
